@@ -13,21 +13,23 @@ PASSWORD = os.getenv("SQL_PASSWORD")
 SOURCE_DB = os.getenv('SOURCE_DB')
 TARGET_DB = os.getenv('TARGET_DB')
 SQL_PACKAGE_PATH = os.getenv('SQL_PACKAGE_PATH')
+FINAL_SCRIPT_NAME = os.getenv('FINAL_SCRIPT_NAME', 'storedProcedures.sql')  
+OUTPUT_DIR = os.getenv('OUTPUT_DIR', 'output')  
 
 # Validate required variables
 if not all([SERVER, USERNAME, PASSWORD, SOURCE_DB, TARGET_DB]):
     print("❌ Missing required environment variables. Please check your .env file.")
     exit(1)
 
-# Paths
-OUTPUT_DIR = "output"
+# Create output directory if it doesn't exist
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# Paths
 DACPAC_PATH = os.path.join(OUTPUT_DIR, f"{SOURCE_DB}.dacpac")
 SCRIPT_PATH = os.path.join(OUTPUT_DIR, "sync_script_main.sql")
 FILTERED_SCRIPT_PATH = os.path.join(OUTPUT_DIR, "filtered_sync_script.sql")
 CLEANED_SCRIPT_PATH = os.path.join(OUTPUT_DIR, "cleaned_sync_script.sql")  # New intermediate file
-FINAL_SCRIPT_PATH = os.path.join(OUTPUT_DIR, "final_script.sql")
+FINAL_SCRIPT_PATH = os.path.join(OUTPUT_DIR, FINAL_SCRIPT_NAME)  # Now using the variable from .env
 
 def clean_sql_file(input_path, output_path):
     """Clean the SQL file by removing unnecessary comments and PRINT statements"""
@@ -111,13 +113,6 @@ def extract_sql_objects_to_file(input_path, output_path):
         })
     
     with open(output_path, 'w', encoding='utf-8') as f:
-        # Write header
-        f.write("-- Extracted SQL Objects\n")
-        f.write(f"-- From: {input_path}\n")
-        f.write(f"-- Total functions: {len(results['functions'])}\n")
-        f.write(f"-- Total procedures: {len(results['procedures'])}\n")
-        f.write(f"-- Total drop statements: {len(results['drops'])}\n\n")
-        
         # Write DROP statements first (grouped by type)
         if results['drops']:
             f.write("-- DROP STATEMENTS --\n\n")
@@ -176,7 +171,7 @@ def convert_sql_file(input_file, output_file):
     # Clean duplicate GOs and extra spacing
     content = re.sub(r'\bGO\s+GO\b', 'GO', content, flags=re.IGNORECASE)
     content = re.sub(r'\n{3,}', '\n\n', content)
-
+    
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(content)
         
