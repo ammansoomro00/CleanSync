@@ -26,42 +26,35 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 DACPAC_PATH = os.path.join(OUTPUT_DIR, f"{SOURCE_DB}.dacpac")
 SCRIPT_PATH = os.path.join(OUTPUT_DIR, "sync_script_main.sql")
 FILTERED_SCRIPT_PATH = os.path.join(OUTPUT_DIR, "filtered_sync_script.sql")
+CLEANED_SCRIPT_PATH = os.path.join(OUTPUT_DIR, "cleaned_sync_script.sql")  # New intermediate file
 FINAL_SCRIPT_PATH = os.path.join(OUTPUT_DIR, "final_script.sql")
 
-extract_cmd = [
-    SQL_PACKAGE_PATH,
-    "/Action:Extract",
-    f"/SourceConnectionString:Data Source={SERVER};Initial Catalog={SOURCE_DB};User ID={USERNAME};Password={PASSWORD};TrustServerCertificate=True",
-    f"/TargetFile:{DACPAC_PATH}"
-]
-
-script_cmd = [
-    SQL_PACKAGE_PATH,
-    "/Action:Script",
-    f"/SourceFile:{DACPAC_PATH}",
-    f"/TargetConnectionString:Data Source={SERVER};Initial Catalog={TARGET_DB};User ID={USERNAME};Password={PASSWORD};TrustServerCertificate=True",
-    f"/OutputPath:{SCRIPT_PATH}",
-    "/p:DropObjectsNotInSource=True", 
-]
-
-def run_command(cmd):
-    print("\n➡️ Running command:")
-    print(" ".join(cmd))  
-    try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        print(f"\n✅ Success:\n{result.stdout}")
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"\n❌ Error:\n{e.stderr}")
-        return False
+def clean_sql_file(input_path, output_path):
+    """Clean the SQL file by removing unnecessary comments and PRINT statements"""
+    with open(input_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    # Remove all PRINT statements
+    content = re.sub(r'PRINT N\'.*?\'\s*;\s*GO\s*', '', content)
+    
+    # Remove -- Alter/Create Procedure/Function comments
+    content = re.sub(r'--\s*(Alter|Create)\s+(Procedure|Function):\s*\[?.*?\]?\s*\n', '', content)
+    
+    # Remove other standalone comments
+    content = re.sub(r'--.*?$', '', content, flags=re.MULTILINE)
+    
+    # Remove block comments
+    content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
+    
+    # Remove multiple empty lines
+    content = re.sub(r'\n\s*\n', '\n\n', content)
+    
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(content)
 
 def extract_sql_objects_to_file(input_path, output_path):
     with open(input_path, 'r', encoding='utf-8') as f:
         sql_content = f.read()
-    
-    # Remove comments
-    sql_content = re.sub(r'/\*.*?\*/', '', sql_content, flags=re.DOTALL)
-    sql_content = re.sub(r'--.*?$', '', sql_content, flags=re.MULTILINE)
     
     # Patterns for CREATE/ALTER and DROP statements
     create_alter_pattern = r'(?i)((CREATE|ALTER)\s+(FUNCTION|PROCEDURE)\s+([^\s(]+).*?AS\s+(?:BEGIN|.*?\nBEGIN).*?END\s*(?:GO|$))'
@@ -136,7 +129,6 @@ def extract_sql_objects_to_file(input_path, output_path):
         if results['functions']:
             f.write("-- FUNCTIONS --\n\n")
             for func in results['functions']:
-                f.write(f"-- {func['action'].title()} Function: {func['name']}\n")
                 f.write(func['body'])
                 f.write("\nGO\n\n")
         
@@ -144,7 +136,6 @@ def extract_sql_objects_to_file(input_path, output_path):
         if results['procedures']:
             f.write("-- PROCEDURES --\n\n")
             for proc in results['procedures']:
-                f.write(f"-- {proc['action'].title()} Procedure: {proc['name']}\n")
                 f.write(proc['body'])
                 f.write("\nGO\n\n")
     
@@ -154,108 +145,104 @@ def convert_sql_file(input_file, output_file):
     with open(input_file, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    # Split content into sections that might contain function definitions
-    sections = re.split(r'(GO\s*\n)', content)
-    processed_sections = []
-    
-    for i, section in enumerate(sections):
-        # Skip GO separators
-        if section.strip() == 'GO':
-            processed_sections.append(section)
-            continue
-            
-        # Process CREATE/ALTER PROCEDURE statements with PRINT statements
-        section = re.sub(
-            r'(PRINT\s+N?\'Creating Procedure\s+\[dbo\]\.\[(\w+)\]\...\'\s*;\s*\n)(CREATE|ALTER)\s+PROCEDURE\s+(\w+)',
-            lambda m: f'DROP PROCEDURE IF EXISTS {m.group(4)}\nGO\n{m.group(1)}CREATE PROCEDURE {m.group(4)}',
-            section,
-            flags=re.IGNORECASE
-        )
+    # Handle PROCEDURE
+    def replace_proc(match):
+        full_header = match.group(0)
+        name = match.group('name')
+        modified_header = re.sub(r'\bALTER\b', 'CREATE', full_header, flags=re.IGNORECASE)
+        return f"DROP PROCEDURE IF EXISTS {name}\nGO\n{modified_header}"
 
-        # Process remaining CREATE/ALTER PROCEDURE statements
-        section = re.sub(
-            r'(--\s*(Alter|Create)\s+Procedure:\s*\[?([^\n]+)\]?\s*\n)(ALTER|CREATE)\s+PROCEDURE\s+(\w+)',
-            lambda m: f'DROP PROCEDURE IF EXISTS {m.group(5)}\nGO\n{m.group(1)}CREATE PROCEDURE {m.group(5)}',
-            section,
-            flags=re.IGNORECASE
-        )
+    content = re.sub(
+        r'(?i)(?P<header>(ALTER|CREATE)\s+PROCEDURE\s+(?P<name>(\[[^\]]+\]|\w+)(\.\[[^\]]+\]|\.\w+)?)(\s*\(.*?\))?)',
+        replace_proc,
+        content,
+        flags=re.IGNORECASE | re.DOTALL
+    )
 
-        # Process ALTER PROCEDURE statements without comments
-        section = re.sub(
-            r'^(ALTER\s+PROCEDURE\s+\[?(\w+)\]?)',
-            lambda m: f'DROP PROCEDURE IF EXISTS {m.group(2)}\nGO\nCREATE PROCEDURE {m.group(2)}',
-            section,
-            flags=re.IGNORECASE
-        )
+    # Handle FUNCTION
+    def replace_func(match):
+        full_header = match.group(0)
+        name = match.group('name')
+        modified_header = re.sub(r'\bALTER\b', 'CREATE', full_header, flags=re.IGNORECASE)
+        return f"DROP FUNCTION IF EXISTS {name}\nGO\n{modified_header}"
 
-        # Process CREATE/ALTER FUNCTION statements (all types)
-        section = re.sub(
-            r'(PRINT\s+N?\'Creating Function\s+\[dbo\]\.\[(\w+)\]\...\'\s*;\s*\n)(CREATE|ALTER)\s+FUNCTION\s+(\w+)',
-            lambda m: f'DROP FUNCTION IF EXISTS {m.group(4)}\nGO\n{m.group(1)}CREATE FUNCTION {m.group(4)}',
-            section,
-            flags=re.IGNORECASE
-        )
+    content = re.sub(
+        r'(?i)(?P<header>(ALTER|CREATE)\s+FUNCTION\s+(?P<name>(\[[^\]]+\]|\w+)(\.\[[^\]]+\]|\.\w+)?)(\s*\(.*?\))?)',
+        replace_func,
+        content,
+        flags=re.IGNORECASE | re.DOTALL
+    )
 
-        # Process function declarations with comments
-        section = re.sub(
-            r'(--\s*(Create|Alter)\s+Function:\s*(\w+)\s*\n)(CREATE|ALTER)\s+FUNCTION\s+(\w+)',
-            lambda m: f'DROP FUNCTION IF EXISTS {m.group(5)}\nGO\n{m.group(1)}CREATE FUNCTION {m.group(5)}',
-            section,
-            flags=re.IGNORECASE
-        )
-
-        # Process standalone function declarations at start of section
-        if not section.lstrip().startswith('DROP FUNCTION IF EXISTS'):
-            section = re.sub(
-                r'^(CREATE|ALTER)\s+FUNCTION\s+(\w+)',
-                lambda m: f'DROP FUNCTION IF EXISTS {m.group(2)}\nGO\nCREATE FUNCTION {m.group(2)}',
-                section,
-                flags=re.IGNORECASE
-            )
-
-        processed_sections.append(section)
-
-    # Recombine sections
-    content = ''.join(processed_sections)
-    
-    # Remove any duplicate GO statements
-    content = re.sub(r'GO\s+GO', 'GO', content)
+    # Clean duplicate GOs and extra spacing
+    content = re.sub(r'\bGO\s+GO\b', 'GO', content, flags=re.IGNORECASE)
+    content = re.sub(r'\n{3,}', '\n\n', content)
 
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(content)
-
+        
+# Main execution
 print("\n===================================================")
 print(" STEP 1: Extracting DACPAC from Source Database")
 print("===================================================")
+
+extract_cmd = [
+    SQL_PACKAGE_PATH,
+    "/Action:Extract",
+    f"/SourceConnectionString:Data Source={SERVER};Initial Catalog={SOURCE_DB};User ID={USERNAME};Password={PASSWORD};TrustServerCertificate=True",
+    f"/TargetFile:{DACPAC_PATH}"
+]
+def run_command(cmd):
+    print("\n➡️ Running command:")
+    print(" ".join(cmd))  
+    try:
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        print(f"\n✅ Success:\n{result.stdout}")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"\n❌ Error:\n{e.stderr}")
+        return False
 
 if run_command(extract_cmd):
     print("\n===================================================")
     print(" STEP 2: Generating Schema Sync Script")
     print("===================================================")
 
+    script_cmd = [
+        SQL_PACKAGE_PATH,
+        "/Action:Script",
+        f"/SourceFile:{DACPAC_PATH}",
+        f"/TargetConnectionString:Data Source={SERVER};Initial Catalog={TARGET_DB};User ID={USERNAME};Password={PASSWORD};TrustServerCertificate=True",
+        f"/OutputPath:{SCRIPT_PATH}",
+        "/p:DropObjectsNotInSource=True", 
+    ]
+
     if run_command(script_cmd):
         print("\n===================================================")
-        print(" STEP 3: Filtering SQL Objects (Functions / Procedures)")
+        print(" STEP 3: Cleaning SQL Script (Removing Comments)")
         print("===================================================")
         
-        summary_msg = extract_sql_objects_to_file(SCRIPT_PATH, FILTERED_SCRIPT_PATH)
+        clean_sql_file(SCRIPT_PATH, CLEANED_SCRIPT_PATH)
+        print(f"Created cleaned intermediate file at: {CLEANED_SCRIPT_PATH}")
+
+        print("\n===================================================")
+        print(" STEP 4: Filtering SQL Objects (Functions/Procedures)")
+        print("===================================================")
+        
+        summary_msg = extract_sql_objects_to_file(CLEANED_SCRIPT_PATH, FILTERED_SCRIPT_PATH)
         print(summary_msg)
 
         print("\n===================================================")
-        print(" STEP 4: Converting Script to Use DROP IF EXISTS")
+        print(" STEP 5: Converting Script to Use DROP IF EXISTS")
         print("===================================================")
 
         convert_sql_file(FILTERED_SCRIPT_PATH, FINAL_SCRIPT_PATH)
-
         print(f"\nFinal cleaned sync script generated at: {FINAL_SCRIPT_PATH}")
 
         # File size comparison
         original_size = os.path.getsize(SCRIPT_PATH)
-        filtered_size = os.path.getsize(FILTERED_SCRIPT_PATH)
-
+        final_size = os.path.getsize(FINAL_SCRIPT_PATH)
+        print(f"\nSize reduction: {original_size/1024:.1f}KB → {final_size/1024:.1f}KB ({(original_size-final_size)/1024:.1f}KB saved)")
     else:
         print("\nFailed to generate sync script from DACPAC.")
 else:
     print("\nFailed to extract DACPAC from source database.")
-
-    print("\nExtraction failed - cannot generate sync script.")
