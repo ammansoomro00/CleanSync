@@ -28,7 +28,7 @@ def load_environment_variables():
         **required_vars,
         'FINAL_SCRIPT_NAME': os.getenv('FINAL_SCRIPT_NAME', 'storedProcedures.sql'),
         'OUTPUT_DIR': os.getenv('OUTPUT_DIR', 'output'),
-        'FINAL_OUTPUT_PATH': os.getenv('FINAL_OUTPUT_PATH')  # Optional custom path for final script
+        'FINAL_OUTPUT_PATH': os.getenv('FINAL_OUTPUT_PATH') 
     }
 
 # --------------------------
@@ -132,6 +132,52 @@ def convert_sql_to_drop_create(content):
     content = re.sub(r'\bGO\s+GO\b', 'GO', content, flags=re.IGNORECASE)
     return re.sub(r'\n{3,}', '\n\n', content)
 
+def add_print_statements(input_file, output_file):
+    with open(input_file, 'r') as file:
+        lines = file.readlines()
+
+    output_lines = []
+    buffer = []
+    create_pattern = re.compile(r"CREATE\s+(FUNCTION|PROCEDURE)\s+([^\s(]+)", re.IGNORECASE)
+    current_object = None
+
+    for line in lines:
+        buffer.append(line)
+
+        # Check if this line contains CREATE FUNCTION/PROCEDURE
+        match = create_pattern.search(line)
+        if match:
+            object_type = match.group(1).upper()
+            object_name = match.group(2).strip()
+            current_object = (object_type, object_name)
+
+        # Check for GO, which indicates end of current object block
+        if line.strip().upper() == "GO" and current_object:
+            object_type, object_name = current_object
+            output_lines.extend(buffer)
+
+            # Add PRINT statement
+            output_lines.append(f"IF OBJECT_ID('{object_name}') IS NOT NULL\n")
+            output_lines.append(f"    PRINT '<<< CREATED {object_type} {object_name} >>>'\n")
+            output_lines.append("ELSE\n")
+            output_lines.append(f"    PRINT '<<< FAILED CREATING {object_type} {object_name} >>>'\n")
+            output_lines.append("GO\n\n")
+
+            buffer = []
+            current_object = None
+        elif line.strip().upper() == "GO":
+            # GO without any object — just copy the buffer
+            output_lines.extend(buffer)
+            buffer = []
+
+    # Append any remaining lines
+    output_lines.extend(buffer)
+
+    with open(output_file, 'w') as file:
+        file.writelines(output_lines)
+
+    print(f"✅ Updated SQL written to: {output_file}")
+
 # --------------------------
 # Command Execution
 # --------------------------
@@ -227,7 +273,16 @@ def generate_sync_script(config):
     
     final_content = convert_sql_to_drop_create(filtered_content)
     write_file_content(final_path, final_content)
-    print(f"\nFinal cleaned sync script generated at: {final_path}")
+    
+    # STEP 6: Add PRINT statements for verification
+    print("\n===================================================")
+    print(" STEP 6: Adding PRINT Statements")
+    print("===================================================")
+    
+    add_print_statements(final_path, final_path)
+    
+    print(f"\n✅ Final script with PRINT statements saved to: {final_path}")
+
     
     # File size comparison (using files in OUTPUT_DIR for comparison)
     original_size = os.path.getsize(script_path)
