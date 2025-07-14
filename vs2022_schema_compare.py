@@ -27,7 +27,8 @@ def load_environment_variables():
     return {
         **required_vars,
         'FINAL_SCRIPT_NAME': os.getenv('FINAL_SCRIPT_NAME', 'storedProcedures.sql'),
-        'OUTPUT_DIR': os.getenv('OUTPUT_DIR', 'output')
+        'OUTPUT_DIR': os.getenv('OUTPUT_DIR', 'output'),
+        'FINAL_OUTPUT_PATH': os.getenv('FINAL_OUTPUT_PATH')  # Optional custom path for final script
     }
 
 # --------------------------
@@ -154,15 +155,23 @@ def run_command(command, description):
 
 def generate_sync_script(config):
     """Main workflow to generate the SQL sync script"""
-    # Setup paths
+    # Ensure output directory exists for all intermediate files
+    ensure_directory_exists(config['OUTPUT_DIR'])
+    
+    # All intermediate files go to OUTPUT_DIR
     dacpac_path = os.path.join(config['OUTPUT_DIR'], f"{config['SOURCE_DB']}.dacpac")
     script_path = os.path.join(config['OUTPUT_DIR'], "sync_script_main.sql")
     cleaned_path = os.path.join(config['OUTPUT_DIR'], "cleaned_sync_script.sql")
     filtered_path = os.path.join(config['OUTPUT_DIR'], "filtered_sync_script.sql")
-    final_path = os.path.join(config['OUTPUT_DIR'], config['FINAL_SCRIPT_NAME'])
     
-    # Ensure output directory exists
-    ensure_directory_exists(config['OUTPUT_DIR'])
+    # Final path logic
+    if config['FINAL_OUTPUT_PATH']:
+        # Ensure final output directory exists if specified
+        ensure_directory_exists(config['FINAL_OUTPUT_PATH'])
+        final_path = os.path.join(config['FINAL_OUTPUT_PATH'], config['FINAL_SCRIPT_NAME'])
+    else:
+        # Fall back to OUTPUT_DIR if no final path specified
+        final_path = os.path.join(config['OUTPUT_DIR'], config['FINAL_SCRIPT_NAME'])
     
     print("\n===================================================")
     print(" STEP 1: Extracting DACPAC from Source Database")
@@ -172,7 +181,7 @@ def generate_sync_script(config):
         config['SQL_PACKAGE_PATH'],
         "/Action:Extract",
         f"/SourceConnectionString:Data Source={config['SERVER']};Initial Catalog={config['SOURCE_DB']};User ID={config['SQL_USERNAME']};Password={config['SQL_PASSWORD']};TrustServerCertificate=True",
-        f"/TargetFile:{dacpac_path}"
+        f"/TargetFile:{dacpac_path}"  # DACPAC goes to OUTPUT_DIR
     ]
     
     if not run_command(extract_cmd, "Extracting DACPAC"):
@@ -187,7 +196,7 @@ def generate_sync_script(config):
         "/Action:Script",
         f"/SourceFile:{dacpac_path}",
         f"/TargetConnectionString:Data Source={config['SERVER']};Initial Catalog={config['TARGET_DB']};User ID={config['SQL_USERNAME']};Password={config['SQL_PASSWORD']};TrustServerCertificate=True",
-        f"/OutputPath:{script_path}",
+        f"/OutputPath:{script_path}",  # Main script goes to OUTPUT_DIR
         "/p:DropObjectsNotInSource=True", 
     ]
     
@@ -220,7 +229,7 @@ def generate_sync_script(config):
     write_file_content(final_path, final_content)
     print(f"\nFinal cleaned sync script generated at: {final_path}")
     
-    # File size comparison
+    # File size comparison (using files in OUTPUT_DIR for comparison)
     original_size = os.path.getsize(script_path)
     final_size = os.path.getsize(final_path)
     print(f"\nSize reduction: {original_size/1024:.1f}KB → {final_size/1024:.1f}KB ({(original_size-final_size)/1024:.1f}KB saved)")
