@@ -262,4 +262,9 @@ if __name__ == "__main__":
             print("\nFailed to generate sync script.")
     except ValueError as e:
         print(f"❌ Error: {e}")
-        exit(1)
+        exit_code = 1
+    else:
+        exit_code = 0
+    finally:
+        input("\nPress Enter to exit...")
+        exit(exit_code)
