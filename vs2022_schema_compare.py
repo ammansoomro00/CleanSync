@@ -109,7 +109,7 @@ def extract_sql_objects_to_file(input_path, output_path):
         obj_name = match.group(2)
         
         # Reconstruct clean DROP statement without PRINT
-        clean_drop = f"DROP {obj_type.upper()} [dbo].[{obj_name}];"
+        clean_drop = f"DROP {obj_type.upper()} IF EXISTS [dbo].[{obj_name}];"
         
         results['drops'].append({
             'type': obj_type,
